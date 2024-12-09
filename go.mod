@@ -1,6 +1,6 @@
 module github.com/sigma/go-test-trace
 
-go 1.23
+go 1.22
 
 require (
 	github.com/honeycombio/otel-config-go v1.17.0
