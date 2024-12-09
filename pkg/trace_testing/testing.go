@@ -13,6 +13,7 @@ import (
 	"github.com/honeycombio/otel-config-go/otelconfig"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -95,22 +96,31 @@ func (s *skipperClient) Skip(testName string) error {
 
 }
 
+type BasicT interface {
+	testing.TB
+	Deadline() (deadline time.Time, ok bool)
+	Parallel()
+	Run(name string, f func(t *testing.T)) bool
+}
+
 type contexter interface {
+	BasicT
 	Context() context.Context
 }
 
 type T interface {
 	testing.TB
-	contexter
-	WithContext(ctx context.Context) T
 	Deadline() (deadline time.Time, ok bool)
 	Parallel()
+	Context() context.Context
+	WithContext(ctx context.Context) T
 	Run(name string, f func(t T)) bool
 }
 
 type tWrapper struct {
-	*testing.T
-	ctx context.Context
+	BasicT
+	ctx            context.Context
+	disableTracing bool
 }
 
 func (t *tWrapper) Context() context.Context {
@@ -118,23 +128,28 @@ func (t *tWrapper) Context() context.Context {
 }
 
 func (t *tWrapper) WithContext(ctx context.Context) T {
-	return &tWrapper{T: t.T, ctx: ctx}
+	return &tWrapper{BasicT: t.BasicT, ctx: ctx}
 }
 
 func (t *tWrapper) Deadline() (deadline time.Time, ok bool) {
-	return t.T.Deadline()
+	return t.BasicT.Deadline()
 }
 
 func (t *tWrapper) Parallel() {
-	t.T.Parallel()
+	t.BasicT.Parallel()
 }
 
 func (t *tWrapper) Run(name string, f func(t T)) bool {
-	return t.T.Run(name, func(tt *testing.T) {
+	return t.BasicT.Run(name, func(tt *testing.T) {
 		wt := wrapT(tt)
-		tracer := otel.Tracer(wt.Name())
-		ctx, span := tracer.Start(t.Context(), name)
-		defer span.End()
+
+		ctx := t.Context()
+		if !t.disableTracing {
+			tracer := otel.Tracer(wt.Name())
+			var span trace.Span
+			ctx, span = tracer.Start(ctx, name)
+			defer span.End()
+		}
 
 		if err := defaultSkipper.Skip(wt.Name()); err != nil {
 			log.Printf("error skipping test %s: %e", wt.Name(), err)
@@ -145,32 +160,31 @@ func (t *tWrapper) Run(name string, f func(t T)) bool {
 
 var _ T = (*tWrapper)(nil)
 
-func wrapT(t *testing.T) T {
-	var ti interface{} = t
+func wrapT(t BasicT) T {
 	var res *tWrapper
-	if tt, ok := ti.(contexter); ok { // should activate with Go 1.24
-		res = &tWrapper{T: t, ctx: tt.Context()}
+	if tt, ok := t.(contexter); ok { // should activate with Go 1.24
+		res = &tWrapper{BasicT: tt, ctx: tt.Context()}
 	} else {
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
-		res = &tWrapper{T: t, ctx: ctx}
+		res = &tWrapper{BasicT: tt, ctx: ctx}
 	}
 
 	return res
 }
 
-func WithTracing(t *testing.T) T {
+func WithTracing(t BasicT) T {
+	res := wrapT(t)
+
 	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(
 		otelconfig.WithServiceName(defaultServiceName),
 	)
 	if err != nil {
 		// OpenTelemetry is not initialized, make our best to run the test
 		log.Printf("error setting up OTel SDK - %e", err)
-		return &tWrapper{T: t, ctx: context.Background()}
+		return &tWrapper{BasicT: t, ctx: context.Background(), disableTracing: true}
 	}
-	t.Cleanup(otelShutdown)
-
-	res := wrapT(t)
+	res.Cleanup(otelShutdown)
 
 	propagator := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
 	ctx := propagator.Extract(res.Context(), defaultCarrier)
