@@ -7,6 +7,8 @@ package example
 import (
 	"testing"
 	"time"
+
+	"github.com/sigma/go-test-trace/pkg/trace_testing"
 )
 
 func TestStart(t *testing.T) {
@@ -35,4 +37,19 @@ func TestLoading_abort(t *testing.T) {
 func TestLoading_interrupt(t *testing.T) {
 	t.Parallel()
 	time.Sleep(80 * time.Millisecond)
+}
+
+func TestTracing(t *testing.T) {
+	tt := trace_testing.WithTracing(t)
+	tt.Parallel()
+
+	tt.Run("test", func(t trace_testing.T) {
+		time.Sleep(100 * time.Millisecond)
+
+		t.Run("subtest", func(t trace_testing.T) {
+			time.Sleep(100 * time.Millisecond)
+		})
+	})
+
+	tt.Fail()
 }
