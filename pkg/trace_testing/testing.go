@@ -160,14 +160,14 @@ func (t *tWrapper) Run(name string, f func(t T)) bool {
 
 var _ T = (*tWrapper)(nil)
 
-func wrapT(t BasicT) T {
+func wrapT(t BasicT) *tWrapper {
 	var res *tWrapper
 	if tt, ok := t.(contexter); ok { // should activate with Go 1.24
 		res = &tWrapper{BasicT: tt, ctx: tt.Context()}
 	} else {
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
-		res = &tWrapper{BasicT: tt, ctx: ctx}
+		res = &tWrapper{BasicT: t, ctx: ctx}
 	}
 
 	return res
